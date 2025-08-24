@@ -14,7 +14,7 @@ import os.path as osp
 
 def step(points, pc_labels, class_labels, model):
     """
-    Input : 
+    Input :
         - points [B, N, 3]
         - ground truth pc_labels [B, N]
         - ground truth class_labels [B]
@@ -23,22 +23,40 @@ def step(points, pc_labels, class_labels, model):
         - logits [B, C, N] (C: num_class)
         - preds [B, N]
     """
-    
-    # TODO : Implement step function for segmentation.
 
-    loss = None
-    logits = None
-    preds = None
+    points, pc_labels, class_labels = (
+        points.to(device),
+        pc_labels.to(device),
+        class_labels.to(device),
+    )
+
+    logits, input_trans, feature_trans = model(points)
+
+    _, C, _ = logits.shape
+    logits_reshaped = logits.transpose(2, 1).contiguous().view(-1, C)  # [B*N, 50]
+    pc_labels_reshaped = pc_labels.view(-1)  # [B*N]
+
+    seg_loss = F.cross_entropy(logits_reshaped, pc_labels_reshaped)
+
+    input_reg_loss = get_orthogonal_loss(input_trans)
+    feat_reg_loss = get_orthogonal_loss(feature_trans)
+
+    loss = seg_loss + input_reg_loss + feat_reg_loss
+
+    preds = torch.argmax(logits, dim=1)  # [B, N]
+
     return loss, logits, preds
 
 
 def train_step(points, pc_labels, class_labels, model, optimizer, train_acc_metric):
-    loss, logits, preds = step(
-        points, pc_labels, class_labels, model
-    )
+    loss, logits, preds = step(points, pc_labels, class_labels, model)
     train_batch_acc = train_acc_metric(preds, pc_labels.to(device))
 
-    # TODO : Implement backpropagation using optimizer and loss
+    optimizer.zero_grad()
+
+    loss.backward()
+
+    optimizer.step()
 
     return loss, train_batch_acc
 
@@ -46,9 +64,7 @@ def train_step(points, pc_labels, class_labels, model, optimizer, train_acc_metr
 def validation_step(
     points, pc_labels, class_labels, model, val_acc_metric, val_iou_metric
 ):
-    loss, logits, preds = step(
-        points, pc_labels, class_labels, model
-    )
+    loss, logits, preds = step(points, pc_labels, class_labels, model)
     val_batch_acc = val_acc_metric(preds, pc_labels)
     val_batch_iou, masked_preds = val_iou_metric(logits, pc_labels, class_labels)
 
@@ -74,7 +90,7 @@ def main(args):
             topk=2,
             verbose=True,
         )
-    
+
     # It will download Shapenet Dataset at the first time.
     (train_ds, val_ds, test_ds), (train_dl, val_dl, test_dl) = get_data_loaders(
         data_dir="./data", batch_size=args.batch_size, phases=["train", "val", "test"]
@@ -95,7 +111,7 @@ def main(args):
             )
             train_epoch_loss.append(train_batch_loss)
             pbar.set_description(
-                f"{epoch+1}/{args.epochs} epoch | loss: {train_batch_loss:.4f} | accuracy: {train_batch_acc*100:.1f}%"
+                f"{epoch + 1}/{args.epochs} epoch | loss: {train_batch_loss:.4f} | accuracy: {train_batch_acc * 100:.1f}%"
             )
 
         train_epoch_loss = sum(train_epoch_loss) / len(train_epoch_loss)
@@ -106,14 +122,20 @@ def main(args):
         with torch.no_grad():
             val_epoch_loss = []
             for points, pc_labels, class_labels in val_dl:
-                points, pc_labels, class_labels = points.to(device), pc_labels.to(device), class_labels.to(device)
-                val_batch_loss, val_batch_masked_preds, val_batch_acc, val_batch_iou = validation_step(
-                    points,
-                    pc_labels,
-                    class_labels,
-                    model,
-                    val_acc_metric,
-                    val_iou_metric,
+                points, pc_labels, class_labels = (
+                    points.to(device),
+                    pc_labels.to(device),
+                    class_labels.to(device),
+                )
+                val_batch_loss, val_batch_masked_preds, val_batch_acc, val_batch_iou = (
+                    validation_step(
+                        points,
+                        pc_labels,
+                        class_labels,
+                        model,
+                        val_acc_metric,
+                        val_iou_metric,
+                    )
                 )
                 val_epoch_loss.append(val_batch_loss)
 
@@ -121,12 +143,15 @@ def main(args):
             val_epoch_acc = val_acc_metric.compute_epoch()
             val_epoch_iou = val_iou_metric.compute_epoch()
             print(
-                f"train loss: {train_epoch_loss:.4f} | train acc: {train_epoch_acc*100:.1f}% | val loss: {val_epoch_loss:.4f} | val acc: {val_epoch_acc*100:.1f}% | val mIoU: {val_epoch_iou*100:.1f}%"
+                f"train loss: {train_epoch_loss:.4f} | train acc: {train_epoch_acc * 100:.1f}% | val loss: {val_epoch_loss:.4f} | val acc: {val_epoch_acc * 100:.1f}% | val mIoU: {val_epoch_iou * 100:.1f}%"
             )
 
             if args.save:
                 checkpoint_manager.update(
-                    model, epoch, round(val_epoch_iou.item() * 100, 2), f"Segmentation_ckpt"
+                    model,
+                    epoch,
+                    round(val_epoch_iou.item() * 100, 2),
+                    f"Segmentation_ckpt",
                 )
         scheduler.step()
 
@@ -138,20 +163,31 @@ def main(args):
         test_acc_metric = Accuracy()
         test_iou_metric = mIoU()
         for points, pc_labels, class_labels in test_dl:
-            points, pc_labels, class_labels = points.to(device), pc_labels.to(device), class_labels.to(device)
-            test_batch_loss, test_batch_masked_preds, test_batch_acc, test_batch_iou = validation_step(
-                points,
-                pc_labels,
-                class_labels,
-                model,
-                test_acc_metric,
-                test_iou_metric,
+            points, pc_labels, class_labels = (
+                points.to(device),
+                pc_labels.to(device),
+                class_labels.to(device),
+            )
+            test_batch_loss, test_batch_masked_preds, test_batch_acc, test_batch_iou = (
+                validation_step(
+                    points,
+                    pc_labels,
+                    class_labels,
+                    model,
+                    test_acc_metric,
+                    test_iou_metric,
+                )
             )
         test_acc = test_acc_metric.compute_epoch()
         test_iou = test_iou_metric.compute_epoch()
 
-        print(f"test acc: {test_acc*100:.1f}% | test mIoU: {test_iou*100:.1f}%")
-        save_samples(points[4:8], pc_labels[4:8], test_batch_masked_preds[4:8], "segmentation_samples.png")
+        print(f"test acc: {test_acc * 100:.1f}% | test mIoU: {test_iou * 100:.1f}%")
+        save_samples(
+            points[4:8],
+            pc_labels[4:8],
+            test_batch_masked_preds[4:8],
+            "segmentation_samples.png",
+        )
 
 
 if __name__ == "__main__":

@@ -11,18 +11,30 @@ from utils.model_checkpoint import CheckpointManager
 
 def step(points, labels, model):
     """
-    Input : 
+    Input :
         - points [B, N, 3]
         - ground truth labels [B]
     Output : loss
         - loss []
         - preds [B]
     """
-    
-    # TODO : Implement step function for classification.
 
-    loss = None
-    preds = None
+    points = points.to(device)
+    labels = labels.to(device)
+
+    logits, input_trans, feat_trans = model(points)
+
+    cls_loss = F.cross_entropy(logits, labels)
+
+    input_reg_loss = get_orthogonal_loss(input_trans)
+    feat_reg_loss = get_orthogonal_loss(feat_trans)
+
+    # Total loss
+    loss = cls_loss + input_reg_loss + feat_reg_loss
+
+    # Get predictions
+    preds = torch.argmax(logits, dim=1)
+
     return loss, preds
 
 
@@ -30,7 +42,11 @@ def train_step(points, labels, model, optimizer, train_acc_metric):
     loss, preds = step(points, labels, model)
     train_batch_acc = train_acc_metric(preds, labels.to(device))
 
-    # TODO : Implement backpropagation using optimizer and loss
+    optimizer.zero_grad()
+
+    loss.backward()
+
+    optimizer.step()
 
     return loss, train_batch_acc
 
@@ -68,7 +84,7 @@ def main(args):
             # Whether to maximize or minimize metric.
             verbose=True,
         )
-    
+
     # It will download ModelNet dataset at the first time.
     (train_ds, val_ds, test_ds), (train_dl, val_dl, test_dl) = get_data_loaders(
         data_dir="./data", batch_size=args.batch_size, phases=["train", "val", "test"]
@@ -79,7 +95,6 @@ def main(args):
     test_acc_metric = Accuracy()
 
     for epoch in range(args.epochs):
-
         # training step
         model.train()
         pbar = tqdm(train_dl)
@@ -90,7 +105,7 @@ def main(args):
             )
             train_epoch_loss.append(train_batch_loss)
             pbar.set_description(
-                f"{epoch+1}/{args.epochs} epoch | loss: {train_batch_loss:.4f} | accuracy: {train_batch_acc*100:.1f}%"
+                f"{epoch + 1}/{args.epochs} epoch | loss: {train_batch_loss:.4f} | accuracy: {train_batch_acc * 100:.1f}%"
             )
 
         train_epoch_loss = sum(train_epoch_loss) / len(train_epoch_loss)
@@ -110,7 +125,7 @@ def main(args):
             val_epoch_loss = sum(val_epoch_loss) / len(val_epoch_loss)
             val_epoch_acc = val_acc_metric.compute_epoch()
             print(
-                f"train loss: {train_epoch_loss:.4f} train acc: {train_epoch_acc*100:.1f}% | val loss: {val_epoch_loss:.4f} val acc: {val_epoch_acc*100:.1f}%"
+                f"train loss: {train_epoch_loss:.4f} train acc: {train_epoch_acc * 100:.1f}% | val loss: {val_epoch_loss:.4f} val acc: {val_epoch_acc * 100:.1f}%"
             )
 
         if args.save:
@@ -119,7 +134,10 @@ def main(args):
             save ckpt only if the current metric is in topk.
             """
             checkpoint_manager.update(
-                model, epoch, round(val_epoch_acc.item() * 100, 2), f"Classification_ckpt"
+                model,
+                epoch,
+                round(val_epoch_acc.item() * 100, 2),
+                f"Classification_ckpt",
             )
 
         scheduler.step()
@@ -135,7 +153,7 @@ def main(args):
             )
         test_acc = test_acc_metric.compute_epoch()
 
-        print(f"test acc: {test_acc*100:.1f}%")
+        print(f"test acc: {test_acc * 100:.1f}%")
 
 
 if __name__ == "__main__":

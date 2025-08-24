@@ -36,7 +36,7 @@ class STNKd(nn.Module):
         x = torch.max(x, 2)[0]
 
         x = self.fc(x)
-        
+
         # Followed the original implementation to initialize a matrix as I.
         identity = (
             Variable(torch.eye(self.k, dtype=torch.float))
@@ -53,6 +53,7 @@ class PointNetFeat(nn.Module):
     """
     Corresponds to the part that extracts max-pooled features.
     """
+
     def __init__(
         self,
         input_transform: bool = False,
@@ -68,7 +69,16 @@ class PointNetFeat(nn.Module):
             self.stn64 = STNKd(k=64)
 
         # point-wise mlp
-        # TODO : Implement point-wise mlp model based on PointNet Architecture.
+
+        self.conv1 = nn.Sequential(nn.Conv1d(3, 64, 1), nn.BatchNorm1d(64), nn.ReLU())
+
+        self.conv2 = nn.Sequential(
+            nn.Conv1d(64, 128, 1), nn.BatchNorm1d(128), nn.ReLU()
+        )
+
+        self.conv3 = nn.Sequential(
+            nn.Conv1d(128, 1024, 1), nn.BatchNorm1d(1024), nn.ReLU()
+        )
 
     def forward(self, pointcloud):
         """
@@ -76,23 +86,54 @@ class PointNetFeat(nn.Module):
             - pointcloud: [B,N,3]
         Output:
             - Global feature: [B,1024]
-            - ...
+            - Local features: [B, 64, N]
+            - Input transformation: [B, 3, 3]
+            - Feature transformation: [B, 64, 64]
         """
+        x = pointcloud.transpose(2, 1)  # [B, 3, N]
 
-        # TODO : Implement forward function.
-        pass
+        input_trans = None
+        if self.input_transform:
+            input_trans = self.stn3(x)  # [B, 3, 3]
+            x = torch.bmm(input_trans, x)  # [B, 3, 3] @ [B, 3, N] -> [B, 3, N]
+
+        x = self.conv1(x)  # [B, 64, N]
+
+        feature_trans = None
+        if self.feature_transform:
+            feature_trans = self.stn64(x)  # [B, 64, 64]
+            x = torch.bmm(feature_trans, x)  # [B, 64, 64] @ [B, 64, N] -> [B, 64, N]
+
+        local_features = x
+
+        x = self.conv2(x)  # [B, 128, N]
+        x = self.conv3(x)  # [B, 1024, N]
+
+        global_features = torch.max(x, 2)[0]  # [B, 1024]
+
+        return global_features, local_features, input_trans, feature_trans
 
 
 class PointNetCls(nn.Module):
     def __init__(self, num_classes, input_transform, feature_transform):
         super().__init__()
         self.num_classes = num_classes
-        
+
         # extracts max-pooled features
         self.pointnet_feat = PointNetFeat(input_transform, feature_transform)
-        
+
         # returns the final logits from the max-pooled features.
-        # TODO : Implement MLP that takes global feature as an input and return logits.
+        self.classifier = nn.Sequential(
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_classes),
+        )
 
     def forward(self, pointcloud):
         """
@@ -102,17 +143,34 @@ class PointNetCls(nn.Module):
             - logits [B,num_classes]
             - ...
         """
-        # TODO : Implement forward function.
-        pass
+        global_features, _, input_trans, feature_trans = self.pointnet_feat(pointcloud)
+
+        logits = self.classifier(global_features)
+
+        return logits, input_trans, feature_trans
 
 
 class PointNetPartSeg(nn.Module):
     def __init__(self, m=50):
         super().__init__()
 
-        # returns the logits for m part labels each point (m = # of parts = 50).
-        # TODO: Implement part segmentation model based on PointNet Architecture.
-        pass
+        self.m = m
+
+        self.pointnet_feat = PointNetFeat(input_transform=True, feature_transform=True)
+
+        self.seg_conv1 = nn.Sequential(
+            nn.Conv1d(1088, 512, 1), nn.BatchNorm1d(512), nn.ReLU()
+        )
+
+        self.seg_conv2 = nn.Sequential(
+            nn.Conv1d(512, 256, 1), nn.BatchNorm1d(256), nn.ReLU()
+        )
+
+        self.seg_conv3 = nn.Sequential(
+            nn.Conv1d(256, 128, 1), nn.BatchNorm1d(128), nn.ReLU()
+        )
+
+        self.seg_conv4 = nn.Conv1d(128, m, 1)
 
     def forward(self, pointcloud):
         """
@@ -122,28 +180,68 @@ class PointNetPartSeg(nn.Module):
             - logits: [B,50,N] | 50: # of point labels
             - ...
         """
-        # TODO: Implement forward function.
-        pass
+
+        B, N, _ = pointcloud.shape
+
+        global_features, local_features, input_trans, feature_trans = (
+            self.pointnet_feat(pointcloud)
+        )
+
+        # Global features: [B, 1024]
+        # Local features: [B, 64, N]
+
+        global_features_expanded = global_features.unsqueeze(2).expand(-1, -1, N)
+
+        concatenated_features = torch.cat(
+            [local_features, global_features_expanded], dim=1
+        )  # [B, 1088, N]
+
+        x = self.seg_conv1(concatenated_features)  # [B, 512, N]
+        x = self.seg_conv2(x)  # [B, 256, N]
+        x = self.seg_conv3(x)  # [B, 128, N]
+
+        logits = self.seg_conv4(x)  # [B, 50, N]
+
+        return logits, input_trans, feature_trans
 
 
 class PointNetAutoEncoder(nn.Module):
     def __init__(self, num_points):
         super().__init__()
+
         self.pointnet_feat = PointNetFeat()
 
         # Decoder is just a simple MLP that outputs N x 3 (x,y,z) coordinates.
-        # TODO : Implement decoder.
+        self.decoder = nn.Sequential(
+            nn.Linear(1024, num_points // 4),
+            nn.BatchNorm1d(num_points // 4),
+            nn.ReLU(),
+            nn.Linear(num_points // 4, num_points // 2),
+            nn.BatchNorm1d(num_points // 2),
+            nn.ReLU(),
+            nn.Linear(num_points // 2, num_points),
+            nn.BatchNorm1d(num_points),
+            nn.Linear(num_points, num_points * 3),
+        )
 
     def forward(self, pointcloud):
         """
         Input:
             - pointcloud [B,N,3]
         Output:
-            - pointcloud [B,N,3]
-            - ...
+            - reconstructed_pointcloud [B,N,3]
+            - input_trans [B,3,3] or None
+            - feat_trans [B,64,64] or None
         """
-        # TODO : Implement forward function.
-        pass
+        B, N, _ = pointcloud.shape
+
+        global_features, _, _, _ = self.pointnet_feat(pointcloud)
+
+        reconstructed_flat = self.decoder(global_features)  # [B, N*3]
+
+        reconstructed_pointcloud = reconstructed_flat.view(B, N, 3)  # [B, N, 3]
+
+        return reconstructed_pointcloud
 
 
 def get_orthogonal_loss(feat_trans, reg_weight=1e-3):

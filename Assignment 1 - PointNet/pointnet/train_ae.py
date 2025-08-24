@@ -9,31 +9,33 @@ from utils.metrics import Accuracy
 from utils.model_checkpoint import CheckpointManager
 from pytorch3d.loss.chamfer import chamfer_distance
 
- 
 
 def step(points, model):
     """
-    Input : 
+    Input :
         - points [B, N, 3]
     Output : loss
         - loss []
         - preds [B, N, 3]
     """
 
-    # TODO : Implement step function for AutoEncoder. 
-    # Hint : Use chamferDist defined in above
-    # Hint : You can compute chamfer distance between two point cloud pc1 and pc2 by chamfer_distance(pc1, pc2)
-    
-    preds = None
-    loss = None
+    points = points.to(device)
 
-    return loss, preds
+    preds = model(points)
+
+    chamfer_loss, _ = chamfer_distance(points, preds)
+
+    return chamfer_loss, preds
 
 
 def train_step(points, model, optimizer):
     loss, preds = step(points, model)
 
-    # TODO : Implement backpropagation using optimizer and loss
+    optimizer.zero_grad()
+
+    loss.backward()
+
+    optimizer.step()
 
     return loss, preds
 
@@ -71,7 +73,6 @@ def main(args):
     )
 
     for epoch in range(args.epochs):
-
         # training step
         model.train()
         pbar = tqdm(train_dl)
@@ -80,7 +81,7 @@ def main(args):
             train_batch_loss, train_batch_preds = train_step(points, model, optimizer)
             train_epoch_loss.append(train_batch_loss)
             pbar.set_description(
-                f"{epoch+1}/{args.epochs} epoch | loss: {train_batch_loss:.4f}"
+                f"{epoch + 1}/{args.epochs} epoch | loss: {train_batch_loss:.4f}"
             )
 
         train_epoch_loss = sum(train_epoch_loss) / len(train_epoch_loss)
@@ -99,7 +100,9 @@ def main(args):
             )
 
         if args.save:
-            checkpoint_manager.update(model, epoch, round(val_epoch_loss.item(), 4), f"AutoEncoding_ckpt")
+            checkpoint_manager.update(
+                model, epoch, round(val_epoch_loss.item(), 4), f"AutoEncoding_ckpt"
+            )
 
         scheduler.step()
 
