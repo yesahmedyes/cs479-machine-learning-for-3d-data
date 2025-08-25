@@ -1,3 +1,5 @@
+# type: ignore
+
 """
 rays.py
 """
@@ -45,6 +47,7 @@ class RayBundle:
         """
         return self.origins.shape[0]
 
+
 @dataclass(init=False)
 class RaySamples:
     """
@@ -76,12 +79,23 @@ class RaySamples:
         Returns:
             coords: Coordinates of points sampled along rays in the ray bundle.
         """
-        # TODO
-        raise NotImplementedError("Task 2")
+        origins = self.ray_bundle.origins
+        directions = self.ray_bundle.directions
+        t_samples = self.t_samples
+
+        origins_expanded = origins.unsqueeze(1)  # [num_ray, 1, 3]
+        directions_expanded = directions.unsqueeze(1)  # [num_ray, 1, 3]
+        t_samples_expanded = t_samples.unsqueeze(-1)  # [num_ray, num_sample, 1]
+
+        coords = origins_expanded + t_samples_expanded * directions_expanded
+
+        return coords
 
     @jaxtyped
     @typechecked
-    def compute_deltas(self, right_end: float=1e8) -> Float[torch.Tensor, "num_ray num_sample"]:
+    def compute_deltas(
+        self, right_end: float = 1e8
+    ) -> Float[torch.Tensor, "num_ray num_sample"]:
         """
         Compute differences between adjacent t's required to approximate integrals.
 

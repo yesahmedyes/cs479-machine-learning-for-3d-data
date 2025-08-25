@@ -1,3 +1,5 @@
+# type: ignore
+
 """
 Pytorch implementation of MLP used in NeRF (ECCV 2020).
 """
@@ -34,8 +36,45 @@ class NeRF(nn.Module):
         """
         super().__init__()
 
-        # TODO
-        raise NotImplementedError("Task 1")
+        self.pos_dim = pos_dim
+        self.view_dir_dim = view_dir_dim
+        self.feat_dim = feat_dim
+
+        self.layers_1_4 = nn.Sequential(
+            nn.Linear(pos_dim, feat_dim),
+            nn.ReLU(),
+            nn.Linear(feat_dim, feat_dim),
+            nn.ReLU(),
+            nn.Linear(feat_dim, feat_dim),
+            nn.ReLU(),
+            nn.Linear(feat_dim, feat_dim),
+            nn.ReLU(),
+        )
+
+        self.layers_5_8 = nn.Sequential(
+            nn.Linear(feat_dim + pos_dim, feat_dim),
+            nn.ReLU(),
+            nn.Linear(feat_dim, feat_dim),
+            nn.ReLU(),
+            nn.Linear(feat_dim, feat_dim),
+            nn.ReLU(),
+            nn.Linear(feat_dim, feat_dim),
+            nn.ReLU(),
+        )
+
+        self.density_layer = nn.Sequential(
+            nn.Linear(feat_dim, 1),
+            nn.ReLU(),
+        )
+
+        self.feature_layer = nn.Linear(feat_dim, feat_dim)
+
+        self.rgb_layer = nn.Sequential(
+            nn.Linear(feat_dim + view_dir_dim, feat_dim // 2),
+            nn.ReLU(),
+            nn.Linear(feat_dim // 2, 3),
+            nn.Sigmoid(),
+        )
 
     @jaxtyped
     @typechecked
@@ -43,7 +82,9 @@ class NeRF(nn.Module):
         self,
         pos: Float[torch.Tensor, "num_sample pos_dim"],
         view_dir: Float[torch.Tensor, "num_sample view_dir_dim"],
-    ) -> Tuple[Float[torch.Tensor, "num_sample 1"], Float[torch.Tensor, "num_sample 3"]]:
+    ) -> Tuple[
+        Float[torch.Tensor, "num_sample 1"], Float[torch.Tensor, "num_sample 3"]
+    ]:
         """
         Predicts color and density.
 
@@ -59,5 +100,16 @@ class NeRF(nn.Module):
             radiance: The radiance predictions evaluated at the given sample points.
         """
 
-        # TODO
-        raise NotImplementedError("Task 1")
+        x = self.layers_1_4(pos)
+
+        x = torch.cat([x, pos], dim=-1)
+        x = self.layers_5_8(x)
+
+        sigma = self.density_layer(x)
+
+        x = self.feature_layer(x)
+        x = torch.cat([x, view_dir], dim=-1)
+
+        radiance = self.rgb_layer(x)
+
+        return sigma, radiance
